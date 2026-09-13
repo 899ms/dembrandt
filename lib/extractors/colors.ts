@@ -868,6 +868,25 @@ export async function extractWcagPairs(page) {
         return compositeBackgroundLayers(layers);
       }
 
+      // "logo" as a whole word: [class*=logo] alone also matches "logout".
+      const LOGO_NAME = /(^|[^a-z])(logo|wordmark)([^a-z]|$)/i;
+      const LOGO_SEL = '[class*="logo" i], [id*="logo" i], [class*="wordmark" i]';
+      function isExempt(el) {
+        if (el.closest('[aria-hidden="true"], [disabled], [aria-disabled="true"], fieldset[disabled]')) return true;
+        const hit = el.closest(LOGO_SEL);
+        if (!hit || !LOGO_NAME.test(hit.className + ' ' + hit.id)) return false;
+        // 1.4.3 exempts the logotype, not a container named after it: a
+        // ".logo-bar" header holding nav links is not a logotype.
+        return hit.textContent.trim() === el.textContent.trim();
+      }
+
+      function hasOwnText(el) {
+        for (const node of el.childNodes) {
+          if (node.nodeType === 3 && node.nodeValue.trim()) return true;
+        }
+        return false;
+      }
+
       const seen = new Map();
       let checked = 0;
       const els = document.querySelectorAll('p, h1, h2, h3, h4, h5, h6, a, button, label, span, li, td, th, [role="button"]');
@@ -879,6 +898,7 @@ export async function extractWcagPairs(page) {
           if (s.display === 'none' || s.visibility === 'hidden' || s.opacity === '0') continue;
           const rect = el.getBoundingClientRect();
           if (rect.width === 0 || rect.height === 0) continue;
+          if (!hasOwnText(el) || isExempt(el)) continue;
           const fgRgba = parseRgba(s.color);
           if (!fgRgba || fgRgba.a < 0.1) continue;
           const bgRgb = effectiveBackground(el);
@@ -889,38 +909,64 @@ export async function extractWcagPairs(page) {
           const fg = toHexFromRgb(effR, effG, effB);
           const bg = toHexFromRgb(bgRgb.r, bgRgb.g, bgRgb.b);
           if (fg === bg) continue;
-          const key = [fg, bg].sort().join('/');
+          const parsedSize = parseFloat(s.fontSize);
+          const fontSize = Number.isFinite(parsedSize) && parsedSize > 0 ? parsedSize : 16;
+          const weight = parseInt(s.fontWeight, 10) || 400;
+          const key = [fg, bg].sort().join('/') + '|' + fontSize + '|' + weight;
           const entry = seen.get(key);
-          if (entry) { entry.count++; } else { seen.set(key, { fg, bg, count: 1 }); }
+          if (!entry) {
+            seen.set(key, { fg, bg, count: 1, fontSize, fontWeight: weight });
+          } else {
+            entry.count++;
+          }
         } catch { /* skip any element that throws */ }
       }
 
-      return Array.from(seen.values()).sort((a, b) => b.count - a.count).slice(0, 50);
+      return Array.from(seen.values()).sort((a, b) => b.count - a.count).slice(0, 200);
     });
   } catch {
     return [];
   }
 
-  const { relativeLuminance } = await import('../colors.js');
-  const pairs = [];
-  const seen = new Set();
+  const { relativeLuminance, wcagVerdict, isLargeScale } = await import('../colors.js');
 
-  for (const { fg, bg, count } of rawPairs) {
+  const byPair = new Map();
+  for (const { fg, bg, count, fontSize, fontWeight } of rawPairs) {
+    const large = fontSize === undefined ? undefined : isLargeScale(fontSize, fontWeight ?? 400);
+    const key = [fg, bg].sort().join('/') + (large === undefined ? '' : large ? '/lg' : '/sm');
+    const entry = byPair.get(key);
+    if (!entry) {
+      byPair.set(key, { fg, bg, count, fontSize, fontWeight, large });
+    } else {
+      entry.count += count;
+      // Report the smallest occurrence: it is the one closest to failing.
+      if (fontSize != null && (entry.fontSize == null || fontSize < entry.fontSize)) {
+        entry.fontSize = fontSize;
+        entry.fontWeight = fontWeight;
+      }
+    }
+  }
+
+  const pairs = [];
+  for (const { fg, bg, count, fontSize, fontWeight, large } of byPair.values()) {
     try {
-      const key = [fg, bg].sort().join('/');
-      if (seen.has(key)) continue;
-      seen.add(key);
       const l1 = relativeLuminance(fg);
       const l2 = relativeLuminance(bg);
       if (l1 === null || l2 === null) continue;
       const lighter = Math.max(l1, l2);
       const darker = Math.min(l1, l2);
       const ratio = Math.round((lighter + 0.05) / (darker + 0.05) * 100) / 100;
-      pairs.push({ fg, bg, ratio, aa: ratio >= 4.5, aaLarge: ratio >= 3, aaa: ratio >= 7, count });
+      pairs.push({
+        fg, bg, ratio, count,
+        aa: ratio >= 4.5, aaLarge: ratio >= 3, aaa: ratio >= 7,
+        ...wcagVerdict(ratio, large),
+        fontSize: fontSize === undefined ? undefined : Math.round(fontSize * 10) / 10,
+        fontWeight,
+      });
     } catch { /* skip malformed pair */ }
   }
 
-  return pairs.sort((a, b) => b.count - a.count);
+  return pairs.sort((a, b) => b.count - a.count).slice(0, 50);
 }
 
 /**

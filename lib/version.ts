@@ -39,6 +39,33 @@
  *  (unversioned) — `voice` / `voiceSkipped` ship behind a hidden, opt-in flag
  *          and deliberately do not bump the contract. Bump when the flag is
  *          documented, not before.
+ *  1.13.0 — wcag pairs gain fontSize, fontWeight, large, requiredAA, passAA and
+ *          passAAA: the observed text size decides which 1.4.3 / 1.4.6
+ *          threshold governs a pair, so passAA is a verdict where aa was only
+ *          a fixed 4.5:1 test. BEHAVIOR: pairs are now keyed by size class, so
+ *          one colour pair can appear twice (body and large), and text that
+ *          1.4.3 exempts (logotypes, disabled controls, aria-hidden) plus
+ *          wrappers whose text is rendered by a child are no longer reported.
+ *          Hover/focus pairs carry the same fields. aa/aaLarge/aaa are still
+ *          written but deprecated: they test fixed ratios and ignore text size,
+ *          and they are removed in 2.0.0. Every surface grades through
+ *          gradeWcagPair()/passesAA(); read passAA, not aa.
+ *          Values move for an unchanged site.
+ *          Also in 1.13.0: logo.dataUri is emitted for img and css-background
+ *          logos, not only inline SVG, and favicons gain dataUri. Bytes are
+ *          fetched at extraction time (in the page, then from node), capped at
+ *          100KB for a logo and 25KB for a favicon, and the field stays absent
+ *          when the fetch fails. Exports stop hotlinking the audited site: a
+ *          saved report or PDF no longer breaks offline, rots when the asset
+ *          URL changes, or re-requests the site's server when opened. MCP
+ *          responses replace the bytes with a marker: an agent cannot use
+ *          them and they would cost it hundreds of kilobytes of context.
+ *          Drift gains a `logo` category (weight 0.8): the mark is compared at
+ *          the strongest identity both snapshots carry (inline markup, then
+ *          inlined bytes, then a url normalised of w/q/dpl/dpr/s), so an image
+ *          optimizer's rewritten url, and a pre-1.13.0 baseline that has no
+ *          bytes, are not reported as a changed logo.
+ *
  *  1.12.0 — colors.detected entries gain areaFrac: the colour's share of painted
  *          background area, alongside the existing element-count usageFrac, so
  *          a hero fill is not outranked by sixty icons. BEHAVIOR, and it is a
@@ -156,7 +183,7 @@
  *          normalizeExtraction().
  *  1.0.0 — baselined on the 0.16.0 shape.
  */
-export const SCHEMA_VERSION = '1.12.0';
+export const SCHEMA_VERSION = '1.13.0';
 
 /** W3C DTCG spec revision the `--dtcg` export targets. */
 export const DTCG_SPEC_VERSION = '2025.10';

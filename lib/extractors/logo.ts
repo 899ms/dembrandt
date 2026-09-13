@@ -34,6 +34,79 @@ export async function extractSiteName(page) {
   });
 }
 
+const LOGO_MAX_BYTES = 100_000;
+const FAVICON_MAX_BYTES = 25_000;
+const FAVICON_INLINE_LIMIT = 6;
+const ASSET_FETCH_TIMEOUT_MS = 5000;
+const ASSET_PHASE_BUDGET_MS = 8000;
+// Both paths must negotiate the same encoding, or an image optimizer answers
+// the page (Accept: avif,webp) and node (Accept: */*) with different bytes for
+// the same logo, which reads downstream as "the logo changed".
+const ASSET_ACCEPT = 'image/png,image/jpeg,image/svg+xml,image/*;q=0.8';
+
+/**
+ * Fetch each URL as a data URI, in the page first so the session's cookies and
+ * referer apply (CDN-signed and hotlink-protected assets check them), then from
+ * node for anything the page could not read: a cross-origin asset without CORS
+ * headers is unreadable in the page but fine from node.
+ */
+async function inlineAssets(page, urls: string[], maxBytes: number): Promise<Record<string, string>> {
+  if (!urls.length) return {};
+  const deadline = Date.now() + ASSET_PHASE_BUDGET_MS;
+  const out = await inlineInPage(page, urls, maxBytes);
+  for (const u of urls) {
+    if (out[u] || Date.now() > deadline) continue;
+    const fromNode = await inlineInNode(u, maxBytes);
+    if (fromNode) out[u] = fromNode;
+  }
+  return out;
+}
+
+async function inlineInNode(url: string, maxBytes: number): Promise<string | null> {
+  try {
+    const resp = await fetch(url, { headers: { accept: ASSET_ACCEPT }, signal: AbortSignal.timeout(ASSET_FETCH_TIMEOUT_MS) });
+    if (!resp.ok) return null;
+    const type = (resp.headers.get('content-type') || '').split(';')[0].trim();
+    if (type && !type.startsWith('image/')) return null;
+    const buf = Buffer.from(await resp.arrayBuffer());
+    if (!buf.length || buf.length > maxBytes) return null;
+    return `data:${type || 'image/png'};base64,${buf.toString('base64')}`;
+  } catch {
+    return null;
+  }
+}
+
+async function inlineInPage(page, urls: string[], maxBytes: number): Promise<Record<string, string>> {
+  try {
+    return await page.evaluate(async ([list, cap, timeoutMs, accept]) => {
+      const out = {};
+      for (const u of list) {
+        try {
+          const resp = await fetch(u, {
+            credentials: 'include',
+            headers: { accept },
+            signal: AbortSignal.timeout(timeoutMs),
+          });
+          if (!resp.ok) continue;
+          const blob = await resp.blob();
+          if (!blob.size || blob.size > cap) continue;
+          const type = (blob.type || '').split(';')[0].trim();
+          if (type && !type.startsWith('image/')) continue;
+          out[u] = await new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(reader.result);
+            reader.onerror = reject;
+            reader.readAsDataURL(blob);
+          });
+        } catch { /* asset stays a remote url */ }
+      }
+      return out;
+    }, [urls, maxBytes, ASSET_FETCH_TIMEOUT_MS, ASSET_ACCEPT] as const);
+  } catch {
+    return {};
+  }
+}
+
 export async function extractLogo(page, url) {
   // Extract manifest.json for PWA icons
   const manifestIcons = await page.evaluate((baseUrl) => {
@@ -811,15 +884,22 @@ export async function extractLogo(page, url) {
       }
     });
 
+    // An empty or "/" og:image resolves to the page itself, which is a document,
+    // not an image: bmw.de ships one.
+    const asImageUrl = (raw) => {
+      try {
+        const u = new URL(raw, baseUrl);
+        return u.pathname === '/' ? null : u.href;
+      } catch { return null; }
+    };
+
     const ogImage = document.querySelector('meta[property="og:image"]') as any;
-    if (ogImage?.getAttribute('content')) {
-      try { favicons.push({ type: 'og:image', url: new URL(ogImage.getAttribute('content'), baseUrl).href, sizes: null }); } catch {}
-    }
+    const ogUrl = ogImage?.getAttribute('content') ? asImageUrl(ogImage.getAttribute('content')) : null;
+    if (ogUrl) favicons.push({ type: 'og:image', url: ogUrl, sizes: null });
 
     const twitterImage = document.querySelector('meta[name="twitter:image"]') as any;
-    if (twitterImage?.getAttribute('content')) {
-      try { favicons.push({ type: 'twitter:image', url: new URL(twitterImage.getAttribute('content'), baseUrl).href, sizes: null }); } catch {}
-    }
+    const twitterUrl = twitterImage?.getAttribute('content') ? asImageUrl(twitterImage.getAttribute('content')) : null;
+    if (twitterUrl) favicons.push({ type: 'twitter:image', url: twitterUrl, sizes: null });
 
     // Only synthesize the /favicon.ico fallback when the page declares no icon at
     // all. Sites that ship their icon under another name (e.g. favicon-purple.ico)
@@ -834,6 +914,30 @@ export async function extractLogo(page, url) {
   // Merge PWA icons into favicons
   result.favicons = [...result.favicons, ...pwaIcons];
   result.manifest = Object.keys(manifestMeta).length > 0 ? manifestMeta : null;
+
+  // A logo that is only a remote URL makes every export a hotlink: it breaks
+  // offline, rots when the URL changes, and re-requests the audited site's
+  // server each time a saved report is opened.
+  const needsBytes: string[] = ([result.logo, ...result.instances] as { url?: string; dataUri?: string; source?: string }[])
+    .filter(i => i && !i.dataUri && i.url && /^https?:/i.test(i.url) && i.source !== 'svg')
+    .map(i => i.url as string);
+  if (needsBytes.length) {
+    const inlined = await inlineAssets(page, [...new Set(needsBytes)], LOGO_MAX_BYTES);
+    for (const inst of [result.logo, ...result.instances]) {
+      if (inst && !inst.dataUri && inlined[inst.url]) inst.dataUri = inlined[inst.url];
+    }
+  }
+
+  const faviconUrls: string[] = (result.favicons as { url?: string; dataUri?: string }[])
+    .filter(f => f && !f.dataUri && f.url && /^https?:/i.test(f.url))
+    .slice(0, FAVICON_INLINE_LIMIT)
+    .map(f => f.url as string);
+  if (faviconUrls.length) {
+    const inlined = await inlineAssets(page, [...new Set(faviconUrls)], FAVICON_MAX_BYTES);
+    for (const f of result.favicons) {
+      if (f && !f.dataUri && inlined[f.url]) f.dataUri = inlined[f.url];
+    }
+  }
 
   // Collect logo colors: inline SVG fill/stroke (already extracted above) + fetched img SVG
   const inlineSvgColors: string[] = [
@@ -851,7 +955,7 @@ export async function extractLogo(page, url) {
   }
   if (svgSrcUrls.size > 0) {
     try {
-      const fetched = await page.evaluate(async (urls: string[]) => {
+      const fetched = await page.evaluate(async ([urls, timeoutMs]: [string[], number]) => {
         const canvas = document.createElement('canvas');
         canvas.width = canvas.height = 1;
         const ctx = canvas.getContext('2d');
@@ -879,7 +983,7 @@ export async function extractLogo(page, url) {
         const colors: string[] = [];
         for (const u of urls) {
           try {
-            const resp = await fetch(u, { credentials: 'omit' });
+            const resp = await fetch(u, { credentials: 'omit', signal: AbortSignal.timeout(timeoutMs) });
             if (!resp.ok) continue;
             const text = await resp.text();
             const parser = new DOMParser();
@@ -896,7 +1000,7 @@ export async function extractLogo(page, url) {
           } catch {}
         }
         return [...new Set(colors)].filter(c => /^#[0-9a-f]{6}$/i.test(c));
-      }, [...svgSrcUrls]);
+      }, [[...svgSrcUrls], ASSET_FETCH_TIMEOUT_MS] as const);
       svgImgColors.push(...fetched);
     } catch {}
   }

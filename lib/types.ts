@@ -241,7 +241,7 @@ export interface Framework {
 }
 
 export interface Logo {
-  source: 'img' | 'svg';
+  source: 'img' | 'svg' | 'css-background';
   url: string;
   width?: number;
   height?: number;
@@ -260,6 +260,8 @@ export interface Favicon {
   type: string;
   url: string;
   sizes: string | null;
+  /** Bytes inlined at extraction time so exports do not hotlink the source. */
+  dataUri?: string | null;
 }
 
 /** PWA web app manifest fields consumed during extraction (theme/name seeding). */
@@ -324,13 +326,25 @@ export interface WcagPair {
   fg: string;
   bg: string;
   ratio: number;
+  /** @deprecated Removed in SCHEMA_VERSION 2.0.0. Fixed 4.5:1 test, ignores text size. Read passAA. */
   aa: boolean;
+  /** @deprecated Removed in SCHEMA_VERSION 2.0.0. Fixed 3:1 test, says nothing about text size. */
   aaLarge: boolean;
+  /** @deprecated Removed in SCHEMA_VERSION 2.0.0. Fixed 7:1 test, ignores text size. Read passAAA. */
   aaa: boolean;
   count?: number;
   state?: string;
   tag?: string;
   source?: string;
+  /** Observed text size of the smallest occurrence, in CSS px. */
+  fontSize?: number;
+  fontWeight?: number;
+  /** WCAG 1.4.3 large scale: >= 18pt, or >= 14pt bold. */
+  large?: boolean;
+  /** Threshold 1.4.3 actually applies to this pair: 3 when large, else 4.5. */
+  requiredAA?: number;
+  passAA?: boolean;
+  passAAA?: boolean;
 }
 
 /** Metadata block on the native extraction output. */

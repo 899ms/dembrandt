@@ -47,6 +47,14 @@ test('renders a self-contained document with no external resources', () => {
   assert.doesNotMatch(html, /@import/i);
 });
 
+test('a logo and favicons never become external resources either', () => {
+  const html = generateHtmlReport(fixture({
+    logo: { source: 'img', url: 'https://example.com/logo.png' },
+    favicons: [{ type: 'icon', url: 'https://example.com/favicon.png', sizes: null }],
+  }));
+  assert.doesNotMatch(html, /src="https?:/i);
+});
+
 test('escapes untrusted extracted strings (no breakout into the document)', () => {
   const evil = '</style><img src=x onerror=alert(1)>';
   const html = generateHtmlReport(fixture({
@@ -132,12 +140,12 @@ test('non-http logo and favicon sources are refused as image srcs', () => {
     logo: { source: 'img', url: 'javascript:alert(1)', width: 10, height: 10 },
     favicons: [
       { type: 'icon', url: 'file:///etc/passwd', sizes: null },
-      { type: 'apple-touch-icon', url: 'https://example.com/apple.png', sizes: '180x180' },
+      { type: 'apple-touch-icon', url: 'https://example.com/apple.png', sizes: '180x180', dataUri: 'data:image/png;base64,iVBORw0KGgo=' },
     ],
   }));
   assert.doesNotMatch(html, /javascript:alert/);
   assert.doesNotMatch(html, /file:\/\/\//);
-  assert.match(html, /src="https:\/\/example\.com\/apple\.png"/);
+  assert.match(html, /src="data:image\/png;base64,iVBORw0KGgo="/);
 });
 
 test('inputs render from either the array or the { text } shape', () => {
@@ -185,4 +193,20 @@ test('the report stamps the extracting version, falling back to the renderer', (
     /<meta name="generator" content="dembrandt 0\.0\.1">/,
   );
   assert.match(generateHtmlReport(fixture({ meta: {} })), /content="dembrandt">/);
+});
+
+test('the report grades a pair at the threshold its text size earns', () => {
+  const large = { fg: '#767676', bg: '#ffffff', ratio: 3.5, aa: false, aaLarge: true, aaa: false, large: true, requiredAA: 3, passAA: true, passAAA: false, fontSize: 32, fontWeight: 700 };
+  const body = { ...large, fg: '#8a8a8a', large: false, requiredAA: 4.5, passAA: false, fontSize: 16, fontWeight: 400 };
+  const html = generateHtmlReport(fixture({ wcag: [large, body] }));
+  assert.match(html, /b-good">AA Large/);
+  assert.match(html, /b-bad">Fail/);
+  assert.match(html, /WCAG contrast \(1 pass · 1 fail\)/);
+});
+
+test('a pair predating the size fields keeps the AA-Large middle tier', () => {
+  const legacy = { fg: '#767676', bg: '#ffffff', ratio: 3.5, aa: false, aaLarge: true, aaa: false };
+  const html = generateHtmlReport(fixture({ wcag: [legacy] }));
+  assert.match(html, /b-warn">AA Large/);
+  assert.match(html, /· 1 AA Large/);
 });

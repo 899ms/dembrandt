@@ -9,7 +9,7 @@ import type { BrandingResult } from '../types.js';
 import chalk from 'chalk';
 import { color } from './theme.js';
 import { formatPageList } from '../run-summary.js';
-import { convertColor, formatColor } from '../colors.js';
+import { convertColor, formatColor, gradeWcagPair } from '../colors.js';
 import type { ColorFormat } from '../colors.js';
 
 /**
@@ -1058,6 +1058,13 @@ function displayMotion(motion) {
   console.log(chalk.dim('│'));
 }
 
+function gradeOf(pair) {
+  const grade = gradeWcagPair(pair);
+  if (grade === 'fail') return color.error('fail');
+  if (grade === 'AA-large') return pair.passAA === undefined ? color.warning('AA-Large') : color.success('AA large');
+  return color.success(grade === 'AA' ? 'AA ' : grade);
+}
+
 function displayWcag(wcag) {
   if (!wcag || wcag.length === 0) return;
 
@@ -1078,13 +1085,7 @@ function displayWcag(wcag) {
     };
     const fgSwatch = swatch(pair.fg);
     const bgSwatch = swatch(pair.bg);
-    const grade = pair.aaa
-      ? color.success('AAA')
-      : pair.aa
-        ? color.success('AA ')
-        : pair.aaLarge
-          ? color.warning('AA-Large')
-          : color.error('fail');
+    const grade = gradeOf(pair);
     const ratio = chalk.bold(`${pair.ratio}:1`);
     const stateTag = pair.state ? chalk.dim(` [${pair.state}]`) : '';
     console.log(chalk.dim(`│  ${branch}`) + ' ' + `${fgSwatch} ${bgSwatch}  ${ratio}  ${grade}${stateTag}  ${chalk.dim(pair.fg + ' / ' + pair.bg)}`);

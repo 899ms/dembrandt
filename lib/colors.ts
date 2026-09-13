@@ -6,6 +6,7 @@
  */
 
 import { parseCssColor } from './color-parse.js';
+import type { WcagPair } from './types.js';
 
 /**
  * Convert sRGB to linear RGB
@@ -362,6 +363,39 @@ export function relativeLuminance(hex) {
   const rgb = hexToRgb(hex);
   if (!rgb) return null;
   return 0.2126 * srgbToLinear(rgb.r) + 0.7152 * srgbToLinear(rgb.g) + 0.0722 * srgbToLinear(rgb.b);
+}
+
+/** 1.4.3 large scale is 18pt, or 14pt bold. Points, not pixels. */
+export function isLargeScale(fontSizePx: number, weight: number): boolean {
+  const pt = 96 / 72;
+  if (fontSizePx >= 18 * pt) return true;
+  return weight >= 700 && fontSizePx >= 14 * pt;
+}
+
+/** Grade a text pair at the threshold its size earns. Undefined `large`: no verdict. */
+export function wcagVerdict(ratio: number, large?: boolean) {
+  if (large === undefined) return {};
+  const requiredAA = large ? 3 : 4.5;
+  const requiredAAA = large ? 4.5 : 7;
+  return { large, requiredAA, passAA: ratio >= requiredAA, passAAA: ratio >= requiredAAA };
+}
+
+export type WcagGrade = 'AAA' | 'AA' | 'AA-large' | 'fail';
+
+/** On a pair without passAA, 'AA-large' means 3:1 with the size unknown. */
+export function gradeWcagPair(pair: Partial<WcagPair>): WcagGrade {
+  if (pair.passAA === undefined) {
+    if (pair.aaa) return 'AAA';
+    if (pair.aa) return 'AA';
+    return pair.aaLarge ? 'AA-large' : 'fail';
+  }
+  if (pair.passAAA) return 'AAA';
+  if (!pair.passAA) return 'fail';
+  return pair.large ? 'AA-large' : 'AA';
+}
+
+export function passesAA(pair: Partial<WcagPair>): boolean {
+  return pair.passAA ?? pair.aa ?? false;
 }
 
 /**
