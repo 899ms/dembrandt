@@ -263,11 +263,39 @@ export async function extractColors(page) {
     // genuine status badges are warm-hued and caught by the numbered branch.
     const statusContext = /\b(error|danger|destructive|invalid|warning|success|alert|notice|sale|discount|toast|notification)\b|(?:text|bg|border|ring|fill|stroke|from|to|via|divide|outline|decoration|accent|caret)-(?:red|rose|orange|amber|yellow)-\d/;
 
+    const colorLiteralRe = /^(#[0-9a-f]{3,8}|rgba?\([^)]*\)|hsla?\([^)]*\)|(?:oklch|oklab|lch|lab|hwb)\([^)]*\))$/i;
+
+    // A palette being documented is not a palette being used. Swatch strips,
+    // colour labels and code samples paint real pixels that carry no brand
+    // intent, and any docs or style-guide page renders them.
+    function isColorSample(el: Element, rect: DOMRect) {
+      if (el.closest('code, pre, samp, kbd')) return true;
+      // Leaves only: textContent on every node of a deep page is quadratic, and
+      // a swatch label is never a wrapper.
+      if (el.children.length === 0 && colorLiteralRe.test((el.textContent || '').trim())) return true;
+
+      if (rect.width > 200 || rect.height > 200 || !el.parentElement) return false;
+      const siblings: Element[] = Array.from(el.parentElement.children);
+      if (siblings.length < 4) return false;
+      const fills = new Set();
+      for (const sib of siblings) {
+        const sibRect = sib.getBoundingClientRect();
+        if (Math.abs(sibRect.width - rect.width) > 1 || Math.abs(sibRect.height - rect.height) > 1) return false;
+        const fill = toLegacy(getComputedStyle(sib).backgroundColor);
+        if (colorAlpha(fill) < 0.9) return false;
+        fills.add(normalizeColor(fill));
+      }
+      // Every block a different opaque fill is a swatch strip; a row of cards
+      // shares one.
+      return fills.size === siblings.length;
+    }
+
     elements.forEach((el) => {
       const computed = getComputedStyle(el);
       if (computed.display === "none" || computed.visibility === "hidden" || computed.opacity === "0") return;
       const rect = el.getBoundingClientRect();
       if (rect.width === 0 || rect.height === 0) return;
+      if (isColorSample(el, rect)) return;
 
       const bgColor = toLegacy(computed.backgroundColor);
       const textColor = toLegacy(computed.color);
@@ -569,7 +597,7 @@ export async function extractColors(page) {
     // brands have no such candidate, so they are left untouched.
     if (semanticColors.primary) {
       const primaryNorm = normalizeColor(semanticColors.primary);
-      if (typeof primaryNorm === 'string' && chroma(primaryNorm) < 0.12) {
+      if (typeof primaryNorm === 'string' && chroma(primaryNorm) < 0.20) {
         // Only the strongest brand signals override a near-neutral primary: a
         // declared brand token or a recurring CTA background. A merely
         // high-confidence chromatic accent is not enough; that would demote a
